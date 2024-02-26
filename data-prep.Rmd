@@ -1,0 +1,209 @@
+---
+title: "Data preparation"
+output:
+  pdf_document: default
+---
+
+# Instructions
+
+- You only need to submit the .Rmd of this file, not a PDF.
+
+- You should __comment__ your code clearly to show what you've done to prepare the data.
+
+- The purpose of this file is to use the data in the `data-raw` folder to create the data you will use in the report. The data you will use in the report should be saved in the `data` folder. It is good professional practice to make sure you're never directly modifying your raw data, but instead creating new datasets based on merges/manipulations that you need to reuse.
+
+- Make sure you've taken a look at the hints for the web scraping and census API. 
+
+- You may find the `write_rds()` function from the `readr` package helpful (it is loaded as part of the `tidyverse`).
+
+- You do not need to keep the structure below.
+
+# Set up
+
+```{r, libraries}
+# Set up any libraries you need
+library(tidyverse)
+library(polite)
+library(rvest)
+library(lubridate)
+library(haven)
+library(cancensus)
+
+```
+
+# Loading client data
+```{r}
+emergency <- readRDS("data-raw/break_glass_in_case_of_emergency.Rds")
+cust_dev <- readRDS("data-raw/cust_dev.Rds")
+cust_sleep <- readRDS("data-raw/cust_sleep.Rds")
+customer <- readRDS("data-raw/customer.Rds")
+device <- readRDS("data-raw/device.Rds")
+```
+
+# Getting external data
+
+## Web scraping industry data
+
+```{r}
+url <- "https://fitnesstrackerinfohub.netlify.app/"
+
+# Make sure this code is updated appropriately to provide 
+# informative user_agent details
+target <- bow(url,
+              user_agent = "ericyanqi.liu@mail.utoronto.ca for STA303/1002 project",
+              force = TRUE)
+
+# Any details provided in the robots text on crawl delays and 
+# which agents are allowed to scrape
+target
+
+html <- scrape(target)
+
+device_data <- html %>% 
+  html_elements("table") %>% 
+  html_table() %>% 
+  pluck(1) # added, in case you're getting a list format
+```
+
+# Postal Code conversion
+
+```{r}
+# install.packages("haven")
+dataset = readRDS("data-raw/break_glass_in_case_of_emergency.Rds")
+
+postcode <- dataset %>% 
+  dplyr::select(PC, CSDuid) %>% 
+  rename(c("postcode" = "PC"))
+```
+
+# Census API
+
+```{r}
+
+
+
+options(cancensus.api_key = "CensusMapper_b20f6d370fdaee5e01db7b4e82791689",
+        cancensus.cache_path = "cache") # this sets a folder for your cache
+
+
+# get all regions as at the 2016 Census (2020 not up yet)
+regions <- list_census_regions(dataset = "CA16")
+
+regions_filtered <-  regions %>% 
+  filter(level == "CSD") %>% # Figure out what CSD means in Census data
+  as_census_region_list()
+
+# This can take a while
+# We want to get household median income
+census_data_csd <- get_census(dataset='CA16', regions = regions_filtered,
+                          vectors=c("v_CA16_2397"), 
+                          level='CSD', geo_format = "sf")
+
+# Simplify to only needed variables
+median_income <- census_data_csd %>% 
+  as_tibble() %>% 
+  dplyr::select(CSDuid = GeoUID, contains("median"), Population) %>% 
+  mutate(CSDuid = parse_number(CSDuid)) %>% 
+  rename(hhld_median_inc = 2)
+
+```
+
+# merging datasets
+
+```{r}
+#getting median income and population information for report
+median_income_postcode <- postcode %>% 
+  distinct_all() %>% 
+  left_join(median_income) %>% 
+  group_by(postcode) %>% 
+  summarise(hhld_median_inc = mean(hhld_median_inc, na.rm = TRUE),
+            Population = sum(Population, na.rm = TRUE)) %>% 
+  ungroup()
+
+#combing data into one large data set (left join was used)
+cust_dev_combine <- customer %>% 
+  ungroup() %>% 
+  left_join(cust_dev) %>% 
+  left_join(device) %>% 
+  left_join(rename(device_data, c("device_name" = "Device name", "line" = "Line"))) %>% 
+  left_join(median_income_postcode)
+
+
+#attaining skin tone information based off emoji preference
+cust_dev_emoji_mod<- cust_dev_combine %>% 
+  mutate(age = as.numeric(2022 - year(dob))) %>% 
+  mutate(skin_tone = case_when(is.na(emoji_modifier) ~ "yellow",
+                               emoji_modifier == "U+1F3FB" ~ "light",
+                               emoji_modifier == "U+1F3FC" ~ "medium-light",
+                               emoji_modifier == "U+1F3FD" ~ "medium",
+                               emoji_modifier == "U+1F3FE" ~ "medium-dark",
+                               emoji_modifier == "U+1F3FF" ~ "dark"))
+
+# separating customers as traditional and non tradional customers
+cust_dev4<- cust_dev_emoji_mod %>%
+   mutate(custType = ifelse(line == "Active" | line == "Advance", "Non_Traditional", "Traditional"))
+
+cust_dev5<- cust_dev_emoji_mod %>%
+   mutate(custTypeNum = ifelse(line == "Active" | line == "Advance", 1, 0))
+
+# Remove missing data observations
+cust_dev4<- na.omit(cust_dev4)
+
+cust_dev5<- na.omit(cust_dev5)
+
+# write data to data folder
+write_rds(cust_dev4, "data/cust_dev4.Rds")
+
+write_rds(cust_dev5, "data/cust_dev5.Rds")
+
+
+```
+
+
+
+
+```{r}
+# Join cust_dev and device data, and renamed column variables like Device name and Line to make it easier to work with
+cust_dev2 <- customer %>% 
+  ungroup() %>% 
+  left_join(cust_dev) %>% 
+  left_join(device) %>% 
+  left_join(rename(device_data, c("device_name" = "Device name", "line" = "Line")))
+
+# Final cust_dev dataset
+# Create new column variable that labels Active/Advance devices as Non-traditional and the rest as Traditional
+# Create another new column variable that translates the emoji modifier into decipherable skin tones
+cust_dev3 <- cust_dev2 %>% 
+  mutate(Active_OR_Advance = if_else(line %in% c("Active", "Advance"), "Non-traditional", "Traditional")) %>% 
+  mutate(skin_tone = case_when(is.na(emoji_modifier) ~ "yellow",
+                               emoji_modifier == "U+1F3FB" ~ "light",
+                               emoji_modifier == "U+1F3FC" ~ "medium-light",
+                               emoji_modifier == "U+1F3FD" ~ "medium",
+                               emoji_modifier == "U+1F3FE" ~ "medium-dark",
+                               emoji_modifier == "U+1F3FF" ~ "dark")) 
+# Join by customer id with the final customer device data
+cust_sleep2 <- cust_sleep %>% 
+  left_join(cust_dev3)
+
+# removes sex categories that are empty 
+cust_sleep2 <- cust_sleep2 %>% 
+  filter(!is.na(sex))
+
+# Final cust_sleep data
+# Also removes users that use yellow emojis to use later for model
+cust_sleep3 <- cust_sleep2 %>% 
+  filter(skin_tone != "yellow")
+
+# Displays table of mean and variance of each skin tone which will be later manually formatted in a table
+cust_sleep3 %>%
+  group_by(skin_tone) %>%
+  summarise('Mean' = mean(flags), "Variance" = var(flags))
+```
+
+```{r}
+#write data to data folder
+write_rds(cust_dev3, "data/cust_dev3.Rds")
+
+write_rds(cust_sleep3, "data/cust_sleep3.Rds")
+
+```
