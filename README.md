@@ -16,8 +16,12 @@ intervals of p-values. At the end we will provide a conclusion to our clients ne
 discussing the limitations and improvements to strengthen future analyses.
 
 # Research questions
+
 • What are the differences between traditional and non-traditional customers?
+
 • Do non-traditional customers come outside of traditional customers?
+
 • Does the skin tone of a user affect their sleep score? If so, does it remain the same including
 other factors?
+
 • Who are our the non-traditional customers?
